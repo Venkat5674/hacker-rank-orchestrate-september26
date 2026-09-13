@@ -32,9 +32,8 @@ class CashflowSimulator:
     def prepare_cash_flows(self):
         """Build daily scheduled net cash flows for the forecast window [request_date, request_date + forecast_days]."""
         self.daily_net = {self.request_date + timedelta(days=i): 0.0 for i in range(self.forecast_days + 1)}
-        self.event_impacts = {} # event_id -> list of impact dicts
+        self.event_impacts = {}
 
-        # 1. Existing events in dataset
         explicit_dates = set()
 
         for _, row in self.user_events.iterrows():
@@ -61,7 +60,7 @@ class CashflowSimulator:
             if category == 'salary' and 'new_salary_date' in self.user_msg_updates:
                 s_date = parse_date(self.user_msg_updates['new_salary_date'])
 
-            # Ignore past events or already settled events on/before request_date
+            # Ignore past events or already settled events before request_date
             if s_date < self.request_date:
                 continue
             if s_date == self.request_date and status == 'settled':
@@ -241,11 +240,30 @@ class CashflowSimulator:
         balances = self.simulate_balances(custom_payments, spending_changes)
         return min(balances.values())
 
-    def compute_amount_safe_to_pay(self, spending_changes=None):
-        balances_no_payment = self.simulate_balances(custom_payments=None, spending_changes=spending_changes)
-        min_projected = min(balances_no_payment.values())
-        safe_amt = max(0.0, min_projected - self.min_balance)
-        return safe_amt
+    def find_next_salary_date(self):
+        for i in range(1, self.forecast_days + 1):
+            dt = self.request_date + timedelta(days=i)
+            for ev_id, impacts in self.event_impacts.items():
+                for imp in impacts:
+                    if imp['date'] == dt and imp['category'] == 'salary' and imp['direction'] == 'credit':
+                        return dt
+        return self.end_date
+
+    def compute_amount_safe_to_pay(self, requested_amount):
+        next_sal_d = self.find_next_salary_date()
+        curr_b = self.current_balance
+        min_b_pre_salary = self.current_balance
+        
+        for i in range(self.forecast_days + 1):
+            dt = self.request_date + timedelta(days=i)
+            if dt >= next_sal_d:
+                break
+            curr_b += self.daily_net[dt]
+            if curr_b < min_b_pre_salary:
+                min_b_pre_salary = curr_b
+                
+        raw_safe = min_b_pre_salary - self.min_balance
+        return round(min(requested_amount, max(0.0, raw_safe)), 2)
 
     def compute_earliest_date_for_full_payment(self, requested_amount, spending_changes=None):
         balances_no_payment = self.simulate_balances(custom_payments=None, spending_changes=spending_changes)

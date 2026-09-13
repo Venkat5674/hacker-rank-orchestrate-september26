@@ -1,6 +1,8 @@
 # Exclude datasets and corpora
 dataset/
 data/
+scratch/
+
 
 # Exclude virtual environments
 venv/

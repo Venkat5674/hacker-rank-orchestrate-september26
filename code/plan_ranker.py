@@ -39,9 +39,7 @@ class PlanRanker:
         protect_cats = [c.strip() for c in str(prof['expense_categories_to_protect']).split('|') if c.strip() and c != 'nan']
 
         # 1. Base Metrics without spending changes
-        raw_safe_today = simulator.compute_amount_safe_to_pay(spending_changes=None)
-        amount_safe_today = round(min(req_amt, max(0.0, raw_safe_today)), 2)
-
+        amount_safe_today = simulator.compute_amount_safe_to_pay(req_amt)
         earliest_full_date = simulator.compute_earliest_date_for_full_payment(req_amt, spending_changes=None)
 
         # 2. Find all eligible safe candidate plans
@@ -62,7 +60,7 @@ class PlanRanker:
                     'total_paid': req_amt,
                     'start_date': req_date,
                     'num_payments': 1,
-                    'option_id': 'option_00_full'
+                    'priority': 1
                 })
 
         # Candidate B: Installments from request_payment_options.csv
@@ -102,14 +100,14 @@ class PlanRanker:
                         'status': 'affordable_with_plan',
                         'method': 'installments',
                         'plan_str': "|".join(plan_parts),
-                        'earliest_full_date': earliest_full_date,
+                        'earliest_full_date': earliest_full_date if earliest_full_date else "",
                         'spending_changes': 'none',
                         'completes_by_deadline': last_pmt_date <= deadline,
                         'num_spending_changes': 0,
                         'total_paid': tot_paid,
                         'start_date': first_date,
                         'num_payments': num_pmts,
-                        'option_id': opt_id
+                        'priority': 2
                     })
 
         # Candidate C: Partial Payment
@@ -135,7 +133,7 @@ class PlanRanker:
                             'total_paid': req_amt,
                             'start_date': req_date,
                             'num_payments': 2,
-                            'option_id': 'option_00_partial'
+                            'priority': 2
                         })
 
         # Candidate D: Wait
@@ -145,7 +143,7 @@ class PlanRanker:
                 wait_schedule = {earliest_full_date: req_amt}
                 if simulator.is_safe(wait_schedule, spending_changes=None):
                     candidate_plans.append({
-                        'status': 'affordable_later' if earliest_dt > deadline else 'affordable_with_plan',
+                        'status': 'affordable_later',
                         'method': 'wait',
                         'plan_str': f"{earliest_full_date}:{format_amt(req_amt)}",
                         'earliest_full_date': earliest_full_date,
@@ -155,35 +153,37 @@ class PlanRanker:
                         'total_paid': req_amt,
                         'start_date': earliest_dt,
                         'num_payments': 1,
-                        'option_id': 'option_00_wait'
+                        'priority': 3
                     })
 
         # Candidate E: Spending Changes (if needed)
         if not candidate_plans:
-            user_events = simulator.user_events
-            possible_changes = []
-            
-            for _, ev in user_events.iterrows():
+            single_changes = []
+            for _, ev in simulator.user_events.iterrows():
                 ev_id = ev['event_id']
                 cat = str(ev['category']).strip()
                 flex = str(ev['flexibility']).strip().lower()
                 status = str(ev['status']).strip().lower()
                 direction = str(ev['direction']).strip().lower()
                 
-                if direction != 'debit' or status not in ['settled', 'scheduled', 'pending']:
+                if direction != 'debit' or status in ['failed', 'cancelled']:
                     continue
                 if cat in protect_cats:
                     continue
 
-                if flex in ['flexible', 'adjustable'] or cat in stop_cats or cat in reduce_cats:
-                    if cat in stop_cats:
-                        possible_changes.append(f"stop:{ev_id}")
-                    if cat in reduce_cats and pd.notna(ev['minimum_allowed_amount']):
-                        min_allowed = float(ev['minimum_allowed_amount'])
-                        possible_changes.append(f"reduce_to:{ev_id}:{format_amt(min_allowed)}")
+                if cat in stop_cats:
+                    single_changes.append(f"stop:{ev_id}")
+                if cat in reduce_cats and pd.notna(ev['minimum_allowed_amount']):
+                    min_allowed = float(ev['minimum_allowed_amount'])
+                    single_changes.append(f"reduce_to:{ev_id}:{format_amt(min_allowed)}")
 
-            for change_item in possible_changes:
-                changes = [change_item]
+            possible_combinations = [[c] for c in single_changes]
+            if len(single_changes) >= 2:
+                for i in range(len(single_changes)):
+                    for j in range(i+1, len(single_changes)):
+                        possible_combinations.append([single_changes[i], single_changes[j]])
+
+            for changes in possible_combinations:
                 if 'full_payment' in considered_methods:
                     plan_schedule = {format_date(req_date): req_amt}
                     if simulator.is_safe(plan_schedule, spending_changes=changes):
@@ -199,7 +199,7 @@ class PlanRanker:
                             'total_paid': req_amt,
                             'start_date': req_date,
                             'num_payments': 1,
-                            'option_id': 'option_00_full_sp'
+                            'priority': 2
                         })
 
         # 3. Lexicographical Ranker
@@ -207,10 +207,10 @@ class PlanRanker:
             candidate_plans.sort(key=lambda p: (
                 not p['completes_by_deadline'],
                 p['num_spending_changes'],
+                p['priority'],
                 p['total_paid'],
                 p['start_date'],
-                p['num_payments'],
-                p['option_id']
+                p['num_payments']
             ))
             best = candidate_plans[0]
             
@@ -237,7 +237,7 @@ class PlanRanker:
             'affordability_status': 'not_affordable',
             'recommended_payment_method': 'not_recommended',
             'payment_plan': 'none',
-            'earliest_date_for_full_payment': earliest_full_date if earliest_full_date else "",
+            'earliest_date_for_full_payment': earliest_full_date if (earliest_full_date and parse_date(earliest_full_date) > req_date) else "",
             'spending_changes_needed': 'none',
             'best_plan_obj': None
         }
