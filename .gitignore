@@ -1,0 +1,27 @@
+# Exclude datasets and corpora
+dataset/
+data/
+
+# Exclude virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Exclude node_modules and build artifacts
+node_modules/
+dist/
+build/
+
+# Exclude python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Exclude IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
